@@ -1,19 +1,43 @@
-import configparser
-import ctypes
-import os
-import sys
-import threading
-import tkinter as tk
-from tkinter import StringVar, IntVar, ttk
-from PIL import Image, ImageTk
-import random
 import colorsys
-import math
+import ctypes
 import pygame
-from pygame.locals import *
+import sys
+import json
+import os
+import math
+import random
+import copy
+import configparser
 
 if sys.platform == "win32":
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("com.example.BaghBandiGame")
+    
+# Initialize Pygame
+pygame.init()
+
+# Constants
+SCREEN_WIDTH = 900
+SCREEN_HEIGHT = 900
+BOARD_SIZE = 740
+BOARD_OFFSET_X = 80
+BOARD_OFFSET_Y = 120
+GRID_SIZE = 5
+CELL_SIZE = BOARD_SIZE // (GRID_SIZE - 1)
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GRAY = (200, 200, 200)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+MAGENTA = (255, 0, 255)
+BLUE = (0, 0, 255)
+LIGHT_BLUE = (173, 216, 230)
+DARK_GREEN = (0, 100, 0)
+YELLOW = (255, 255, 0)
+BUTTON_GREEN = (31, 255, 1)
+BUTTON_BLUE = (0, 0, 255)
+BUTTON_ACTIVE_GREEN = (174, 244, 160)
+BUTTON_ACTIVE_BLUE = (150, 200, 255)
 
 def resource_path(relative_path):
 
@@ -27,768 +51,1332 @@ def resource_path(relative_path):
     if not os.path.exists(full_path):
         raise FileNotFoundError(f"Resource not found: {full_path}")
     return full_path
-CANVAS_SIZE = 600
-BOARD_SIZE = 5
-MARGIN = 50
-CELL = (CANVAS_SIZE - 2 * MARGIN) // (BOARD_SIZE - 1)
-LINE_WIDTH = 2
-POINT_RADIUS = 16
-RED = "T"
-GREEN = "G"
-EMPTY = "."
-BG_DARK = "#071029"
-BG_PANEL = "#241BA4"
-FG_TEXT = "white"
 
-class GameState:
+class RGBHueRing:
+    def __init__(self, radius=22, thickness=4, segments=120, speed=4):
+        self.radius = radius
+        self.thickness = thickness
+        self.segments = segments
+        self.speed = speed
+        self.hue_offset = 0.0
 
+    def update(self):
+        self.hue_offset = (self.hue_offset + self.speed / 360) % 1.0
+
+    def draw(self, surface, center):
+        cx, cy = center
+        for i in range(self.segments):
+            angle = 2 * math.pi * i / self.segments
+            hue = (i / self.segments + self.hue_offset) % 1.0
+
+            r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+            color = (int(r * 255), int(g * 255), int(b * 255))
+
+            x = cx + math.cos(angle) * self.radius
+            y = cy + math.sin(angle) * self.radius
+
+            pygame.draw.circle(surface, color, (int(x), int(y)), self.thickness)
+
+class Button:
+    def __init__(self, x, y, width, height, text, color, active_color, text_color=BLACK, font_size=20):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.color = color
+        self.active_color = active_color
+        self.text_color = text_color
+        self.font = pygame.font.SysFont("Arial", font_size)
+        self.is_active = False
+        
+    def draw(self, screen):
+        color = self.active_color if self.is_active else self.color
+        pygame.draw.rect(screen, color, self.rect, border_radius=5)
+        pygame.draw.rect(screen, BLACK, self.rect, 2, border_radius=5)
+        
+        text_surf = self.font.render(self.text, True, self.text_color)
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        screen.blit(text_surf, text_rect)
+        
+    def check_hover(self, pos):
+        self.is_active = self.rect.collidepoint(pos)
+        return self.is_active
+        
+    def is_clicked(self, pos, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            return self.rect.collidepoint(pos)
+        return False
+
+class Dropdown:
+    def __init__(
+        self, x, y, width, height, options, default_index=0,
+        bg_color=WHITE,
+        fg_color=BLACK,
+        hover_color=LIGHT_BLUE,
+        border_color=BLACK
+    ):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.options = options
+        self.selected_index = default_index
+        self.is_open = False
+
+        self.bg_color = bg_color
+        self.fg_color = fg_color
+        self.hover_color = hover_color
+        self.border_color = border_color
+
+        self.font = pygame.font.SysFont("Arial", 16)
+        self.option_rects = []
+
+        
+    def draw(self, screen):
+        # Main box
+        pygame.draw.rect(screen, self.bg_color, self.rect, border_radius=6)
+        pygame.draw.rect(screen, self.border_color, self.rect, 2, border_radius=6)
+
+        # Selected text
+        selected_text = self.font.render(
+            self.options[self.selected_index], True, self.fg_color
+        )
+        screen.blit(selected_text, (self.rect.x + 8, self.rect.y + 7))
+
+        # Dropdown arrow
+        arrow_color = self.fg_color
+        points = [
+            (self.rect.right - 18, self.rect.centery - 4),
+            (self.rect.right - 8, self.rect.centery - 4),
+            (self.rect.right - 13, self.rect.centery + 4)
+        ]
+        pygame.draw.polygon(screen, arrow_color, points)
+
+        # Options
+        if self.is_open:
+            for i, rect in enumerate(self.option_rects):
+                color = self.hover_color if rect.collidepoint(pygame.mouse.get_pos()) else self.bg_color
+                pygame.draw.rect(screen, color, rect)
+                pygame.draw.rect(screen, self.border_color, rect, 1)
+
+                option_text = self.font.render(self.options[i], True, self.fg_color)
+                screen.blit(option_text, (rect.x + 8, rect.y + 7))
+     
+    def update_options(self):
+        self.option_rects = []
+        for i in range(len(self.options)):
+            rect = pygame.Rect(
+                self.rect.x,
+                self.rect.y + self.rect.height * (i + 1),
+                self.rect.width,
+                self.rect.height
+            )
+            self.option_rects.append(rect)
+            
+    def handle_event(self, event):
+        pos = pygame.mouse.get_pos()
+        
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if self.rect.collidepoint(pos):
+                self.is_open = not self.is_open
+                if self.is_open:
+                    self.update_options()
+                return True
+            elif self.is_open:
+                for i, rect in enumerate(self.option_rects):
+                    if rect.collidepoint(pos):
+                        self.selected_index = i
+                        self.is_open = False
+                        return True
+                self.is_open = False
+        return False
+    
+    def get_selected(self):
+        return self.options[self.selected_index]
+
+class ImageButton:
+    def __init__(self, x, y, image_path, scale=None):
+        self.image = pygame.image.load(image_path).convert_alpha()
+        if scale:
+            self.image = pygame.transform.smoothscale(self.image, scale)
+        self.rect = self.image.get_rect(topleft=(x, y))
+
+    def draw(self, screen):
+        screen.blit(self.image, self.rect)
+
+    def is_clicked(self, pos, event):
+        return (
+            event.type == pygame.MOUSEBUTTONDOWN
+            and event.button == 1
+            and self.rect.collidepoint(pos)
+        )
+
+class OutlinedLabel:
+    def __init__(self, text, font, pos,
+                 text_color=(255, 0, 255),   # magenta
+                 border_color=(0, 0, 0),     # black
+                 border_thickness=1):
+        self.text = text
+        self.font = font
+        self.pos = pos
+        self.text_color = text_color
+        self.border_color = border_color
+        self.border_thickness = border_thickness
+
+    def draw(self, surface):
+        x, y = self.pos
+
+        # Draw border (outline)
+        for dx in range(-self.border_thickness, self.border_thickness + 1):
+            for dy in range(-self.border_thickness, self.border_thickness + 1):
+                if dx != 0 or dy != 0:
+                    border_surf = self.font.render(self.text, True, self.border_color)
+                    surface.blit(border_surf, (x + dx, y + dy))
+
+        # Draw main text
+        text_surf = self.font.render(self.text, True, self.text_color)
+        surface.blit(text_surf, (x, y))
+
+class BaghChalPygame:
     def __init__(self):
-        self.grid = [[EMPTY for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
-        self.current_player = RED
-        for r in range(2):
-            for c in range(BOARD_SIZE):
-                self.grid[r][c] = RED
-        for r in range(BOARD_SIZE - 2, BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                self.grid[r][c] = GREEN
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Bagh Bandi Game - By SouRav")
+        
+        icon = pygame.image.load(resource_path("assets/images/icon.png"))
+        pygame.display.set_icon(icon)
 
-    def neighbors(self, r, c):
-        dirs = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
-        for dr, dc in dirs:
-            nr, nc = r+dr, c+dc
-
-            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
-                yield nr, nc
-
-    def valid_moves(self, r, c):
-        moves, captures = [], []
-        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
-            nr, nc = r+dr, c+dc
-
-            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
-
-                if self.grid[nr][nc] == EMPTY:
-                    moves.append((nr,nc))
-                elif self.grid[nr][nc] != self.current_player:
-                    jr, jc = nr+dr, nc+dc
-
-                    if 0 <= jr < BOARD_SIZE and 0 <= jc < BOARD_SIZE and self.grid[jr][jc] == EMPTY:
-                        captures.append(((nr,nc),(jr,jc)))
-        return moves, captures
-
-    def count_pieces(self, piece):
-        return sum(cell == piece for row in self.grid for cell in row)
-
-    def is_red_win(self):
-        return self.count_pieces(GREEN) == 0
-
-    def is_green_win(self):
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-
-                if self.grid[r][c] == RED:
-                    moves, captures = self.valid_moves(r,c)
-
-                    if moves or captures:
-                        return False
-        return True
-
-class BaghBandiUI:
-
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Bagh Bandi — By SouRav Bhattacharya")
-        self.root.geometry("900x650")
-        self.root.configure(bg=BG_DARK)
-        self.root.resizable(False, False)
-        pygame.init()
-        pygame.mixer.init()
-
-        try:
-            self.root.iconbitmap(resource_path(r"icons/icon.ico"))
-
-        except:
-            pass
+        # Game state
+        self.board = [[None for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        self.selected = None
+        self.legal_moves = []
+        self.current_player = 'R'
+        self.extra_turn_after_capture = False
+        self.game_message = None
+        self.game_message_active = False
+        
+        # AI variables
+        self.ai_player = None
+        self.ai_difficulty = "Easy"
+        self.ai_thinking = False
+        
+        # Game modes
+        self.game_mode = "splash"  # splash, mode_select, playing
+        self.mode = "Play with Friend"
+        self.ai_color = "Green"
+        self.show_mode_selection = False  
+        
+        # UI elements
+        self.buttons = {}
+        self.dropdowns = {}
+        self.create_ui_elements()
+        
+        # Data directory
         self.data_dir = os.path.join(os.path.expanduser("~"), ".BaghBandiGame")
         os.makedirs(self.data_dir, exist_ok=True)
+        self.SAVE_FILE = os.path.join(self.data_dir, "ludo_save.json")
         self.config_file = os.path.join(self.data_dir, "config.ini")
-        self.ai_enabled = False
-        self.controllar_frame = None
-        self.game_over = False
-        self.angle = 0
-        self.hue = 0
-        self.animation_running = False
-        self.animation_items = {}
-        self.main_frame = tk.Frame(root, bg=BG_DARK)
-        self.main_frame.pack(fill="both", expand=True)
-        self.canvas_frame = tk.Frame(self.main_frame, bg="#40477A")
-        self.canvas = tk.Canvas(self.canvas_frame, width=CANVAS_SIZE, height=CANVAS_SIZE,
-                                bg=BG_DARK, highlightthickness=0)
-        self.canvas.pack(padx=15, pady=15)
-        self.sidebar = tk.Frame(self.main_frame, bg=BG_PANEL)
-        tk.Label(self.sidebar, text="BAGH BANDI", font=("Segoe UI", 25, "bold"),
-                 fg="white", bg=BG_PANEL).pack(pady=10)
-        ttk.Separator(self.sidebar, orient="horizontal").pack(fill="x", pady=5)
-        self.info_var = StringVar()
-        self.status_var = StringVar()
-        tk.Label(self.sidebar, textvariable=self.info_var, font=("Segoe UI", 14, "bold"),
-                 fg="cyan", bg=BG_PANEL).pack(pady=10)
-        tk.Label(self.sidebar, textvariable=self.status_var, font=("Segoe UI", 12, "bold"),
-                 fg="lightgreen", bg=BG_PANEL).pack(pady=10)
-        tk.Button(self.sidebar, text="Restart Game", font=("Segoe UI", 12, "bold"),
-                  fg="black",bd=0, bg="lightgreen", activebackground="#05E335", command=self.restart_game).pack(pady=10)
-        tk.Button(self.sidebar, text="Quit", font=("Segoe UI", 12, "bold"),
-                  fg="white",bd=0, bg="red", activebackground="red", command=self.on_closing).pack(pady=10)
-        toggle_on_img = Image.open(resource_path(r"icons/toggle_on.png")).resize((80, 40))
-        self.toggle_on_icon = ImageTk.PhotoImage(toggle_on_img)
-        toggle_off_img = Image.open(resource_path(r"icons/toggle_off.png")).resize((80, 40))
-        self.toggle_off_icon = ImageTk.PhotoImage(toggle_off_img)
-
-        def toggle_ai_button():
-            self.ai_enabled = not self.ai_enabled
-            self.ai_btn.config(image=(self.toggle_on_icon if self.ai_enabled else self.toggle_off_icon))
-
-            if self.ai_enabled and self.state.current_player == RED:
-                self.root.after(500, self.ai_move)
-        tk.Label(self.sidebar, text="PLAY WITH COMPUTER", font=("Segoe UI", 14, "bold"),
-                 fg="cyan", bg=BG_PANEL).pack(pady=(50,5))
-        self.ai_btn = tk.Button(self.sidebar, image=self.toggle_off_icon,
-                           bg=BG_PANEL, bd=0, activebackground=BG_PANEL,
-                           command=toggle_ai_button)
-        self.ai_btn.pack(pady=(0,50))
-        self.difficulty = StringVar(value="Medium")
-        tk.Label(self.sidebar, text="AI Difficulty:", font=("Segoe UI", 12, "bold"),
-                 fg="cyan", bg=BG_PANEL).pack(pady=5)
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure(
-            "TCombobox",
-            fieldbackground="red",
-            background="#12E5F0",
-            foreground="black",
-            bordercolor="red",
-            lightcolor="black",
-            darkcolor="pink",
-            arrowcolor="blue",
-            selectbackground="lightblue",
-            selectforeground="black"
-        )
-        self.sidebar.option_add('*TCombobox*Listbox.background', "#262372")
-        self.sidebar.option_add('*TCombobox*Listbox.foreground', 'white')
-        self.sidebar.option_add('*TCombobox*Listbox.selectBackground', "#5A7DE5")
-        self.sidebar.option_add('*TCombobox*Listbox.selectForeground', 'black')
-        self.sidebar.option_add('*TCombobox*Listbox.font', 'SegoeUI 11')
-        self.difficulty_dropdown = ttk.Combobox(self.sidebar, textvariable=self.difficulty,
-                                    values=["Easy", "Medium", "Hard", "Expert"],
-                                    font=("Segoe UI", 12), state="readonly")
-        self.difficulty_dropdown.pack(pady=5)
-        self.state = GameState()
-        self.selected = None
-        self.valid_moves = []
-        self.valid_captures = []
-        red_img = Image.open(resource_path(r"icons/red.png")).resize((35, 35))
-        self.red_piece = ImageTk.PhotoImage(red_img)
-        green_img = Image.open(resource_path(r"icons/green.png")).resize((35, 35))
-        self.green_piece = ImageTk.PhotoImage(green_img)
-        self.cut_sound1 = pygame.mixer.Sound(resource_path(r"icons/red_cut.mp3"))
-        self.cut_sound2 = pygame.mixer.Sound(resource_path(r"icons/green_cut.mp3"))
-        self.canvas.bind("<Button-1>", self.on_click)
+        
+        # Initialize game
         self.load_window_geometry()
-        self.show_welcome_screen()
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.init_board()
+        
+        # Load images (placeholder - you'll need to add your actual images)
+        self.load_images()
+        
+        # Check for saved game
+        # self.saved_game_exists = os.path.exists(self.SAVE_FILE)
+        self.saved_game_exists = self.is_saved_game_playable()
+        
+        self.selection_ring = RGBHueRing(radius=22, thickness=3, segments=140, speed=6)
+        pygame.mixer.init()
+        self.load_sounds()
+    
+    def is_saved_game_playable(self):
+        """Return True only if saved game exists AND both players still have pieces"""
+        if not os.path.exists(self.SAVE_FILE):
+            return False
 
-    def _handle_post_ai_move_capture(self, captured):
+        try:
+            with open(self.SAVE_FILE, "r") as f:
+                data = json.load(f)
 
-        if captured:
-            self.cut_sound1.play()
-            self.status_var.set("CUT!")
-            self.draw_board()
-            self.root.after(800, self.draw_board)
-        else:
-            self.draw_board()
+            board = data.get("board", [])
 
-    def animate_selection(self):
+            red_exists = any('R' in row for row in board)
+            green_exists = any('G' in row for row in board)
 
-        if not self.selected or self.game_over:
-            self.animation_running = False
-            return
-        for item_id in self.animation_items.values():
-            self.canvas.delete(item_id)
-        self.animation_items.clear()
-        self.angle = (self.angle + 3) % 360
-        self.hue += 0.01
+            return red_exists and green_exists
 
-        if self.hue > 1:
-            self.hue = 0
-        r, g, b = colorsys.hsv_to_rgb(self.hue, 1, 1)
-        hex_color = f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
-        sr, sc = self.selected
-        x, y = self.coord_to_pixel(sr, sc)
-        arc_radius = POINT_RADIUS + 6
-        arc_id = self.canvas.create_arc(
-            x - arc_radius, y - arc_radius,
-            x + arc_radius, y + arc_radius,
-            start=self.angle, extent=210,
-            style="arc", outline=hex_color, width=3
+        except Exception:
+            return False
+
+    
+    def load_sounds(self):
+        try:
+            self.sound_friend_capture = pygame.mixer.Sound(
+                resource_path("assets/sounds/player_capture.mp3")
+            )
+            self.sound_ai_capture = pygame.mixer.Sound(
+                resource_path("assets/sounds/ai_capture.mp3")
+            )
+            self.sound_player_capture = pygame.mixer.Sound(
+                resource_path("assets/sounds/player_capture.mp3")
+            )
+        except Exception as e:
+            print("Sound load failed:", e)
+            self.sound_friend_capture = None
+            self.sound_ai_capture = None
+            self.sound_player_capture = None
+
+    def load_images(self):
+        # Load background image
+        try:
+            bg_image = pygame.image.load(resource_path("assets/images/back_ground.png"))
+            self.bg_image = pygame.transform.scale(bg_image, (SCREEN_WIDTH, SCREEN_HEIGHT))
+        except:
+            # Create gradient background if image not found
+            self.bg_image = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+            self.bg_image.fill((240, 240, 255))
+            
+        try:
+            text_image = pygame.image.load(resource_path("assets/images/text.png"))
+            self.text_image = pygame.transform.scale(text_image, (500, 130))
+        except:
+            # Create text surface if image not found
+            self.text_image = pygame.Surface((500, 130))
+            self.text_image.fill((255, 255, 255))
+            font = pygame.font.SysFont("Arial", 70, bold=True)
+            text = font.render("BAGH BANDI", True, RED)
+            self.text_image.blit(text, (50, 30))
+        try:
+            self.magenta_coin_img = pygame.image.load(
+                resource_path("assets/images/red.png")
+            ).convert_alpha()
+            self.green_coin_img = pygame.image.load(
+                resource_path("assets/images/green.png")
+            ).convert_alpha()
+
+            # Scale to match board size
+            self.magenta_coin_img = pygame.transform.smoothscale(
+                self.magenta_coin_img, (36, 36)
+            )
+            self.green_coin_img = pygame.transform.smoothscale(
+                self.green_coin_img, (36, 36)
+            )
+        except Exception as e:
+            print("Coin image load failed:", e)
+            self.magenta_coin_img = None
+            self.green_coin_img = None
+
+    
+    def create_ui_elements(self):
+        # Splash screen buttons
+        self.buttons["continue"] = Button(
+            SCREEN_WIDTH//2 - 100, SCREEN_HEIGHT//2 - 40, 
+            200, 50, "Continue Game", 
+            BUTTON_BLUE, BUTTON_ACTIVE_BLUE, WHITE, 20
         )
-        self.animation_items[(sr, sc)] = arc_id
 
-        if self.selected:
-            self.root.after(5, self.animate_selection)
+        self.buttons["new_game"] = Button(
+            SCREEN_WIDTH//2 - 100, SCREEN_HEIGHT//2 + 20, 
+            200, 50, "New Game", 
+            BUTTON_GREEN, BUTTON_ACTIVE_GREEN, BLACK, 20
+        )
+
+        # ---- VERTICAL MODE SELECTION UI ----
+        base_x_label = 220
+        base_x_dropdown = 380
+        start_y = 220
+        gap = 100
+
+        self.dropdowns["mode"] = Dropdown(
+            380, 240, 200, 32,
+            ["Play with Friend", "Play with AI"],
+            bg_color=(30, 30, 30),
+            fg_color=(0, 255, 180),
+            hover_color=(50, 50, 50),
+            border_color=(0, 255, 180)
+        )
+
+        self.dropdowns["ai_color"] = Dropdown(
+            380, 340, 200, 32,
+            ["Red", "Green"], 
+            bg_color=(30, 30, 30),
+            fg_color=(0, 255, 180),
+            hover_color=(50, 50, 50),
+            border_color=(0, 255, 180)
+        )
+
+        self.dropdowns["difficulty"] = Dropdown(
+            380, 440, 200, 32,
+            ["Easy", "Medium", "Hard"],
+            bg_color=(30, 30, 30),
+            fg_color=(0, 255, 180),
+            hover_color=(50, 50, 50),
+            border_color=(0, 255, 180)
+        )
+
+        # Start button (below dropdowns)
+        self.buttons["start"] = Button(
+            base_x_dropdown, start_y + gap * 3.5 + 10,
+            200, 42, "Start Game",
+            GREEN, DARK_GREEN, BLACK, 18
+        )
+        
+        self.buttons["back"] = Button(
+            base_x_dropdown,
+            start_y + gap * 4.2 + 10,   # slightly below Start
+            200, 42, "Back",
+            BUTTON_BLUE, BUTTON_ACTIVE_BLUE, WHITE, 18
+        )
+
+        self.buttons["home"] = ImageButton(
+            BOARD_OFFSET_X + BOARD_SIZE - 50,   # top-right of board
+            BOARD_OFFSET_Y - 100,                # above board
+            resource_path(r"assets/images/home.png"),
+            scale=(30, 30)
+        )
+        
+        self.buttons["replay"] = Button(
+            SCREEN_WIDTH // 2 - 140,
+            SCREEN_HEIGHT // 4 + 120,
+            120, 45,
+            "Replay",
+            BUTTON_GREEN,
+            BUTTON_ACTIVE_GREEN,
+            BLACK,
+            18
+        )
+
+        self.buttons["game_home"] = Button(
+            SCREEN_WIDTH // 2 + 20,
+            SCREEN_HEIGHT // 4 + 120,
+            120, 45,
+            "Home",
+            BUTTON_BLUE,
+            BUTTON_ACTIVE_BLUE,
+            WHITE,
+            18
+        )
+
+    def init_board(self):
+        idx = 0
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if idx < 10:
+                    self.board[r][c] = 'R'
+                elif idx >= 15:
+                    self.board[r][c] = 'G'
+                else:
+                    self.board[r][c] = None
+                idx += 1
+    
+    def cell_to_coord(self, r, c):
+        x = BOARD_OFFSET_X + c * CELL_SIZE
+        y = BOARD_OFFSET_Y + r * CELL_SIZE
+        return x, y
+    
+    def nearest_cell(self, x, y):
+        best = None
+        best_d = float('inf')
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                cx, cy = self.cell_to_coord(r, c)
+                d = math.hypot(cx - x, cy - y)
+                if d < best_d:
+                    best_d = d
+                    best = (r, c)
+        if best_d <= 36:  # 2.2 * radius
+            return best
+        return None
+    
+    def opponent(self, player):
+        return 'G' if player == 'R' else 'R'
+    
+    def is_inside(self, r, c):
+        return 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE
+    
+    def valid_directions(self, r, c):
+        dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        if (r + c) % 2 == 0:
+            dirs += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        return dirs
+    
+    def can_move_simple(self, sr, sc, dr, dc):
+        if not self.is_inside(dr, dc) or self.board[dr][dc] is not None:
+            return False
+        for d in self.valid_directions(sr, sc):
+            if sr + d[0] == dr and sc + d[1] == dc:
+                return True
+        return False
+    
+    def can_capture(self, sr, sc, dr, dc):
+        if not self.is_inside(dr, dc) or self.board[dr][dc] is not None:
+            return False
+        for d in self.valid_directions(sr, sc):
+            mid_r, mid_c = sr + d[0], sc + d[1]
+            end_r, end_c = sr + 2 * d[0], sc + 2 * d[1]
+            if (end_r, end_c) == (dr, dc):
+                if self.is_inside(mid_r, mid_c) and self.board[mid_r][mid_c] == self.opponent(self.board[sr][sc]):
+                    return True
+        return False
+    
+    def find_legal_moves(self, r, c):
+        moves = []
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                nr, nc = r + dr, c + dc
+                if not self.is_inside(nr, nc) or self.board[nr][nc] is not None:
+                    continue
+                if max(abs(dr), abs(dc)) == 1 and self.can_move_simple(r, c, nr, nc):
+                    moves.append((nr, nc))
+                if max(abs(dr), abs(dc)) == 2 and self.can_capture(r, c, nr, nc):
+                    moves.append((nr, nc))
+        return moves
+    
+    def find_all_moves_for_player(self, player, board_state):
+        moves = []
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if board_state[r][c] == player:
+                    for d in self.valid_directions(r, c):
+                        nr, nc = r + d[0], c + d[1]
+                        if self.is_inside(nr, nc) and board_state[nr][nc] is None:
+                            moves.append((r, c, nr, nc, 'move'))
+                    for d in self.valid_directions(r, c):
+                        nr, nc = r + 2 * d[0], c + 2 * d[1]
+                        mr, mc = r + d[0], c + d[1]
+                        if self.is_inside(nr, nc) and board_state[nr][nc] is None:
+                            if self.is_inside(mr, mc) and board_state[mr][mc] == self.opponent(player):
+                                moves.append((r, c, nr, nc, 'capture'))
+        return moves
+    
+    def any_legal_moves_for(self, player):
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if self.board[r][c] == player:
+                    if self.find_legal_moves(r, c):
+                        return True
+        return False
+    
+    def count_pieces(self, player, board_state=None):
+        if board_state is None:
+            board_state = self.board
+        count = 0
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if board_state[r][c] == player:
+                    count += 1
+        return count
+    
+    def make_move(self, sr, sc, dr, dc):
+        was_capture = False
+
+        if abs(dr - sr) <= 1 and abs(dc - sc) <= 1:
+            self.board[dr][dc] = self.board[sr][sc]
+            self.board[sr][sc] = None
+            self.selected = None
+            self.legal_moves = []
+            self.current_player = self.opponent(self.current_player)
+            self.extra_turn_after_capture = False
         else:
-            self.animation_running = False
+            mid_r = (sr + dr) // 2
+            mid_c = (sc + dc) // 2
 
-    def on_closing(self):
+            captured_piece = self.board[mid_r][mid_c]   # 👈 important
+            self.board[mid_r][mid_c] = None
+            self.board[dr][dc] = self.board[sr][sc]
+            self.board[sr][sc] = None
+            was_capture = True
+
+            # 🔊 SOUND LOGIC
+            if self.mode == "Play with Friend":
+                if self.sound_friend_capture:
+                    self.sound_friend_capture.play()
+
+            elif self.mode == "Play with AI":
+                # Player captured AI
+                if self.current_player != self.ai_player:
+                    if self.sound_player_capture:
+                        self.sound_player_capture.play()
+
+            self.selected = (dr, dc)
+            self.legal_moves = self.find_legal_moves(dr, dc)
+            self.extra_turn_after_capture = True
+
+            if not self.legal_moves:
+                self.selected = None
+                self.extra_turn_after_capture = False
+                self.current_player = self.opponent(self.current_player)
+
+        self.post_move_updates()
+
+        if (self.mode == "Play with AI" and 
+            self.current_player == self.ai_player and 
+            not self.extra_turn_after_capture):
+            pygame.time.set_timer(pygame.USEREVENT, 500)  # Trigger AI move after delay
+    
+    def post_move_updates(self):
+        mag_count = self.count_pieces('R')
+        green_count = self.count_pieces('G')
+        
+        if mag_count == 0:
+            self.show_message("Green wins!")
+            return
+        
+        if green_count == 0:
+            self.show_message("Red wins!")
+            return
+        
+        if not self.any_legal_moves_for(self.current_player):
+            if self.extra_turn_after_capture:
+                self.current_player = self.opponent(self.current_player)
+                self.extra_turn_after_capture = False
+                if not self.any_legal_moves_for(self.current_player):
+                    winner = "Green" if self.current_player == 'R' else "Red"
+                    self.show_message(f"{winner} wins!")
+                    return
+    
+    def draw_game_message(self):
+        if not self.game_message_active:
+            return
+
+        font = pygame.font.SysFont("Arial", 90, bold=True)
+        text = font.render(self.game_message, True, RED)
+        text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 4))
+
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+
+        self.screen.blit(overlay, (0, 0))
+        self.screen.blit(text, text_rect)
+
+        # ---- DRAW GAME OVER BUTTONS ----
+        mouse_pos = pygame.mouse.get_pos()
+
+        self.buttons["replay"].check_hover(mouse_pos)
+        self.buttons["game_home"].check_hover(mouse_pos)
+
+        self.buttons["replay"].draw(self.screen)
+        self.buttons["game_home"].draw(self.screen)
+
+
+
+    def show_message(self, message):
+        self.game_message = message
+        self.game_message_active = True
+    
+    def evaluate_board(self, board_state, maximizing_player):
+        if maximizing_player == 'R':
+            mag_pieces = self.count_pieces('R', board_state)
+            green_pieces = self.count_pieces('G', board_state)
+        else:
+            mag_pieces = self.count_pieces('G', board_state)
+            green_pieces = self.count_pieces('R', board_state)
+        
+        score = (mag_pieces - green_pieces) * 1000
+        
+        mag_captures = 0
+        green_captures = 0
+        
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                if board_state[r][c] == 'R':
+                    for d in self.valid_directions(r, c):
+                        ar, ac = r + d[0], c + d[1]
+                        jr, jc = r + 2 * d[0], c + 2 * d[1]
+                        if self.is_inside(ar, ac) and self.is_inside(jr, jc):
+                            if board_state[ar][ac] == 'G' and board_state[jr][jc] is None:
+                                green_captures += 1
+                elif board_state[r][c] == 'G':
+                    for d in self.valid_directions(r, c):
+                        ar, ac = r + d[0], c + d[1]
+                        jr, jc = r + 2 * d[0], c + 2 * d[1]
+                        if self.is_inside(ar, ac) and self.is_inside(jr, jc):
+                            if board_state[ar][ac] == 'R' and board_state[jr][jc] is None:
+                                mag_captures += 1
+        
+        score += (mag_captures - green_captures) * 50
+        
+        center_positions = [(2, 2), (1, 2), (2, 1), (2, 3), (3, 2)]
+        for r, c in center_positions:
+            if board_state[r][c] == 'R':
+                score += 10
+            elif board_state[r][c] == 'G':
+                score -= 10
+        
+        mag_moves = len(self.find_all_moves_for_player('R', board_state))
+        green_moves = len(self.find_all_moves_for_player('G', board_state))
+        score += (mag_moves - green_moves) * 5
+        
+        return score if maximizing_player == 'R' else -score
+    
+    def minimax(self, board_state, depth, alpha, beta, maximizing_player, max_player):
+        mag_count = self.count_pieces('R', board_state)
+        green_count = self.count_pieces('G', board_state)
+        
+        if mag_count == 0:
+            return -10000 + depth if max_player == 'R' else 10000 - depth
+        if green_count == 0:
+            return 10000 - depth if max_player == 'R' else -10000 + depth
+        
+        if depth == 0:
+            return self.evaluate_board(board_state, max_player)
+        
+        current_player_turn = max_player if maximizing_player else self.opponent(max_player)
+        moves = self.find_all_moves_for_player(current_player_turn, board_state)
+        
+        if not moves:
+            return -5000 if maximizing_player else 5000
+        
+        if maximizing_player:
+            max_eval = -float('inf')
+            for move in moves:
+                new_board = copy.deepcopy(board_state)
+                sr, sc, dr, dc, move_type = move
+                
+                if move_type == 'move':
+                    new_board[dr][dc] = new_board[sr][sc]
+                    new_board[sr][sc] = None
+                else:
+                    mid_r = (sr + dr) // 2
+                    mid_c = (sc + dc) // 2
+                    new_board[dr][dc] = new_board[sr][sc]
+                    new_board[sr][sc] = None
+                    new_board[mid_r][mid_c] = None
+                
+                eval_score = self.minimax(new_board, depth - 1, alpha, beta, False, max_player)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_board = copy.deepcopy(board_state)
+                sr, sc, dr, dc, move_type = move
+                
+                if move_type == 'move':
+                    new_board[dr][dc] = new_board[sr][sc]
+                    new_board[sr][sc] = None
+                else:
+                    mid_r = (sr + dr) // 2
+                    mid_c = (sc + dc) // 2
+                    new_board[dr][dc] = new_board[sr][sc]
+                    new_board[sr][sc] = None
+                    new_board[mid_r][mid_c] = None
+                
+                eval_score = self.minimax(new_board, depth - 1, alpha, beta, True, max_player)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    def get_best_move_ai(self, board_state, ai_color, difficulty):
+        moves = self.find_all_moves_for_player(ai_color, board_state)
+        if not moves:
+            return None
+        
+        if difficulty == "Easy":
+            capture_moves = [m for m in moves if m[4] == 'capture']
+            if capture_moves:
+                return random.choice(capture_moves)
+            return random.choice(moves)
+        
+        elif difficulty == "Medium":
+            depth = 2
+            best_move = None
+            best_value = -float('inf')
+            
+            for move in moves:
+                new_board = copy.deepcopy(board_state)
+                sr, sc, dr, dc, move_type = move
+                
+                if move_type == 'move':
+                    new_board[dr][dc] = new_board[sr][sc]
+                    new_board[sr][sc] = None
+                else:
+                    mid_r = (sr + dr) // 2
+                    mid_c = (sc + dc) // 2
+                    new_board[dr][dc] = new_board[sr][sc]
+                    new_board[sr][sc] = None
+                    new_board[mid_r][mid_c] = None
+                
+                move_value = self.minimax(new_board, depth - 1, -float('inf'), float('inf'), False, ai_color)
+                
+                if move_value > best_value:
+                    best_value = move_value
+                    best_move = move
+            
+            return best_move
+        
+        else:  # Hard
+            depth = 4
+            best_move = None
+            best_value = -float('inf')
+            
+            for move in moves:
+                if move[4] == 'capture':
+                    new_board = copy.deepcopy(board_state)
+                    sr, sc, dr, dc, move_type = move
+                    mid_r = (sr + dr) // 2
+                    mid_c = (sc + dc) // 2
+                    new_board[dr][dc] = new_board[sr][sc]
+                    new_board[sr][sc] = None
+                    new_board[mid_r][mid_c] = None
+                    
+                    opponent_pieces = self.count_pieces(self.opponent(ai_color), new_board)
+                    if opponent_pieces == 0:
+                        return move
+            
+            for current_depth in range(1, depth + 1):
+                current_best_move = None
+                current_best_value = -float('inf')
+                
+                for move in moves:
+                    new_board = copy.deepcopy(board_state)
+                    sr, sc, dr, dc, move_type = move
+                    
+                    if move_type == 'move':
+                        new_board[dr][dc] = new_board[sr][sc]
+                        new_board[sr][sc] = None
+                    else:
+                        mid_r = (sr + dr) // 2
+                        mid_c = (sc + dc) // 2
+                        new_board[dr][dc] = new_board[sr][sc]
+                        new_board[sr][sc] = None
+                        new_board[mid_r][mid_c] = None
+                    
+                    move_value = self.minimax(new_board, current_depth - 1, -float('inf'), float('inf'), False, ai_color)
+                    
+                    if move_value > current_best_value:
+                        current_best_value = move_value
+                        current_best_move = move
+                
+                best_move = current_best_move
+                best_value = current_best_value
+            
+            if best_move is None and moves:
+                capture_moves = [m for m in moves if m[4] == 'capture']
+                if capture_moves:
+                    best_move = random.choice(capture_moves)
+                else:
+                    best_move = random.choice(moves)
+            
+            return best_move
+    
+    def ai_move(self):
+        if self.ai_thinking or self.current_player != self.ai_player:
+            return
+        
+        self.ai_thinking = True
+        
+        best_move = self.get_best_move_ai(self.board, self.ai_player, self.ai_difficulty)
+        
+        if best_move:
+            sr, sc, dr, dc, move_type = best_move
+            was_capture = (move_type == 'capture')
+            
+            if move_type == 'move':
+                self.board[dr][dc] = self.board[sr][sc]
+                self.board[sr][sc] = None
+            else:
+                mid_r = (sr + dr) // 2
+                mid_c = (sc + dc) // 2
+
+                self.board[mid_r][mid_c] = None
+                self.board[dr][dc] = self.board[sr][sc]
+                self.board[sr][sc] = None
+
+                # 🔊 AI captured player
+                if self.sound_ai_capture:
+                    self.sound_ai_capture.play()
+
+            
+            if was_capture:
+                self.extra_turn_after_capture = True
+            else:
+                self.current_player = self.opponent(self.ai_player)
+                self.extra_turn_after_capture = False
+            
+            self.post_move_updates()
+            
+            if self.extra_turn_after_capture and self.current_player == self.ai_player:
+                pygame.time.set_timer(pygame.USEREVENT, 500)
+            elif self.mode == "Play with AI" and self.current_player == self.ai_player:
+                pygame.time.set_timer(pygame.USEREVENT, 500)
+        
+        self.ai_thinking = False
+    
+    def draw_board(self):
+       # Draw grid lines
+        for i in range(GRID_SIZE):
+            # Vertical lines
+            x = BOARD_OFFSET_X + i * CELL_SIZE
+            pygame.draw.line(self.screen, BLACK, 
+                           (x, BOARD_OFFSET_Y), 
+                           (x, BOARD_OFFSET_Y + BOARD_SIZE), 3)
+            # Horizontal lines
+            y = BOARD_OFFSET_Y + i * CELL_SIZE
+            pygame.draw.line(self.screen, BLACK, 
+                           (BOARD_OFFSET_X, y), 
+                           (BOARD_OFFSET_X + BOARD_SIZE, y), 3)
+        
+        # Draw diagonal lines
+        pygame.draw.line(self.screen, BLACK,
+                        (BOARD_OFFSET_X, BOARD_OFFSET_Y),
+                        (BOARD_OFFSET_X + BOARD_SIZE, BOARD_OFFSET_Y + BOARD_SIZE), 3)
+        pygame.draw.line(self.screen, BLACK,
+                        (BOARD_OFFSET_X, BOARD_OFFSET_Y + BOARD_SIZE),
+                        (BOARD_OFFSET_X + BOARD_SIZE, BOARD_OFFSET_Y), 3)
+        
+        # Draw center lines
+        center_x = BOARD_OFFSET_X + 2 * CELL_SIZE
+        center_y = BOARD_OFFSET_Y + 2 * CELL_SIZE
+        points = [
+            [(BOARD_OFFSET_X, center_y), (center_x, BOARD_OFFSET_Y)],
+            [(center_x, BOARD_OFFSET_Y), (BOARD_OFFSET_X + BOARD_SIZE, center_y)],
+            [(BOARD_OFFSET_X + BOARD_SIZE, center_y), (center_x, BOARD_OFFSET_Y + BOARD_SIZE)],
+            [(center_x, BOARD_OFFSET_Y + BOARD_SIZE), (BOARD_OFFSET_X, center_y)]
+        ]
+        for p1, p2 in points:
+            pygame.draw.line(self.screen, BLACK, p1, p2, 3)
+        
+        # Draw grid points
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                x, y = self.cell_to_coord(r, c)
+                pygame.draw.circle(self.screen, BLACK, (int(x), int(y)), 4)
+        
+        # Draw legal moves
+        for mr, mc in self.legal_moves:
+            x, y = self.cell_to_coord(mr, mc)
+            pygame.draw.circle(self.screen, BLUE, (int(x), int(y)), 10, 2)
+        
+        # Draw pieces
+        # Draw pieces (IMAGE BASED)
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                p = self.board[r][c]
+                if p is not None:
+                    x, y = self.cell_to_coord(r, c)
+
+                    if p == 'R' and self.magenta_coin_img:
+                        rect = self.magenta_coin_img.get_rect(center=(int(x), int(y)))
+                        self.screen.blit(self.magenta_coin_img, rect)
+
+                    elif p == 'G' and self.green_coin_img:
+                        rect = self.green_coin_img.get_rect(center=(int(x), int(y)))
+                        self.screen.blit(self.green_coin_img, rect)
+
+        # Draw selection highlight
+        if self.selected:
+            sr, sc = self.selected
+            x, y = self.cell_to_coord(sr, sc)
+            # pygame.draw.circle(self.screen, RED, (int(x), int(y)), 22, 4)
+            if self.selected:
+                sr, sc = self.selected
+                x, y = self.cell_to_coord(sr, sc)
+                self.selection_ring.draw(self.screen, (int(x), int(y)))
+    
+    def home_to_splash(self):
         self.save_game_state()
-        self.save_window_geometry()
-        self.root.destroy()
+        self.game_mode = "splash"
+        self.show_mode_selection = False
+        self.selected = None
+        self.legal_moves = []
+        # self.current_player = 'R'
+        # self.extra_turn_after_capture = False
+        self.ai_thinking = False
+        # self.init_board()
+        
+    def draw_splash_screen(self):
+        self.screen.blit(self.bg_image, (0, 0))
+        self.screen.blit(self.text_image, (200, 0))
+        
+        if not self.show_mode_selection:
+            # Draw splash buttons
+            mouse_pos = pygame.mouse.get_pos()
+            self.buttons["continue"].check_hover(mouse_pos)
+            self.buttons["new_game"].check_hover(mouse_pos)
+            
+            self.buttons["continue"].draw(self.screen)
+            self.buttons["new_game"].draw(self.screen)
+            
+            # Show continue button only if saved game exists
+            if not self.saved_game_exists:
+                overlay = pygame.Surface((200, 50), pygame.SRCALPHA)
+                overlay.fill((128, 128, 128, 128))
+                self.screen.blit(overlay, self.buttons["continue"].rect.topleft)
+        else:
+            # Draw mode selection UI
+            self.draw_mode_selection_on_splash()
+    
+    def draw_mode_selection_on_splash(self):
+        font = pygame.font.SysFont("Arial", 40, bold=True)
 
+        start_y = 220
+        gap = 100
+        label_x = 220
+
+        # ---- MODE LABEL (always shown) ----
+        mode_label = OutlinedLabel(
+            text="Mode:",
+            font=font,
+            pos=(label_x, start_y + 6),
+            text_color=(255, 0, 255),
+            border_color=(0, 0, 0),
+            border_thickness=3
+        )
+        mode_label.draw(self.screen)
+
+        # ---- MODE DROPDOWN ----
+        self.dropdowns["mode"].draw(self.screen)
+
+        # ---- AI OPTIONS (only if Play with AI) ----
+        if self.dropdowns["mode"].get_selected() == "Play with AI":
+
+            ai_color_label = OutlinedLabel(
+                text="AI Color:",
+                font=font,
+                pos=(label_x, start_y + gap + 6),
+                text_color=(255, 0, 255),
+                border_color=(0, 0, 0),
+                border_thickness=3
+            )
+            ai_color_label.draw(self.screen)
+
+            difficulty_label = OutlinedLabel(
+                text="Difficulty:",
+                font=font,
+                pos=(label_x, start_y + gap * 2 + 6),
+                text_color=(255, 0, 255),
+                border_color=(0, 0, 0),
+                border_thickness=3
+            )
+            difficulty_label.draw(self.screen)
+
+            self.dropdowns["ai_color"].draw(self.screen)
+            self.dropdowns["difficulty"].draw(self.screen)
+
+        # ---- START BUTTON ----
+        mouse_pos = pygame.mouse.get_pos()
+        self.buttons["start"].check_hover(mouse_pos)
+        self.buttons["start"].draw(self.screen)
+        self.buttons["back"].check_hover(mouse_pos)
+        self.buttons["back"].draw(self.screen)
+        
+    def draw_game_mode_screen(self):
+        self.screen.fill((240, 240, 255))
+        
+        # Draw labels
+        font = pygame.font.SysFont("Arial", 20)
+        labels = ["Mode:", "AI Color:", "AI Difficulty:"]
+        positions = [70, 270, 470]
+        
+        for label, x in zip(labels, positions):
+            text = font.render(label, True, BLACK)
+            self.screen.blit(text, (x, 25))
+        
+        # Draw dropdowns
+        for dropdown in self.dropdowns.values():
+            dropdown.draw(self.screen)
+        
+        # Draw start button
+        mouse_pos = pygame.mouse.get_pos()
+        self.buttons["start"].check_hover(mouse_pos)
+        self.buttons["start"].draw(self.screen)
+    
+    def draw_game_screen(self):
+        self.screen.fill((240, 240, 255))
+        
+        # Draw top panel with game info
+        font = pygame.font.SysFont("Arial", 20, bold=True)
+        
+        # Draw mode info
+        mode_text = f"Mode: {self.mode}"
+        if self.mode == "Play with AI":
+            mode_text += f" | AI: {self.ai_color} ({self.ai_difficulty})"
+        text = font.render(mode_text, True, BLACK)
+        self.screen.blit(text, (20, 10))
+        
+        # Draw player turn
+        player_text = f"Turn: {'Red' if self.current_player == 'R' else 'Green'}"
+        if self.extra_turn_after_capture:
+            player_text += " (Extra Turn after Capture!)"
+        text = font.render(player_text, True, BLACK)
+        self.screen.blit(text, (20, 35))
+        
+        # Draw piece counts
+        mag_count = self.count_pieces('R')
+        green_count = self.count_pieces('G')
+        count_text = f"Red: {mag_count} | Green: {green_count}"
+        text = font.render(count_text, True, BLACK)
+        self.screen.blit(text, (20, 60))
+        
+        # Draw board
+        self.draw_board()
+        # Draw home button
+        self.buttons["home"].draw(self.screen)
+        
+        # Draw AI thinking indicator
+        if self.ai_thinking:
+            font = pygame.font.SysFont("Arial", 24)
+            text = font.render("AI is thinking...", True, RED)
+            self.screen.blit(text, (SCREEN_WIDTH//2 - 80, SCREEN_HEIGHT - 40))
+        self.draw_game_message() 
+    
+    def load_game_state(self):
+        if not os.path.exists(self.SAVE_FILE):
+            return False
+        
+        try:
+            with open(self.SAVE_FILE, "r") as f:
+                data = json.load(f)
+            
+            self.board = data["board"]
+            self.current_player = data["current_player"]
+            self.selected = tuple(data["selected"]) if data["selected"] else None
+            self.legal_moves = [tuple(m) for m in data["legal_moves"]]
+            self.extra_turn_after_capture = data["extra_turn_after_capture"]
+            
+            self.mode = data["mode"]
+            self.ai_color = data["ai_color"]
+            self.ai_difficulty = data["ai_difficulty"]
+            self.ai_player = data["ai_player"]
+            
+            self.game_mode = "playing"
+            return True
+            
+        except Exception as e:
+            print(f"Load failed: {e}")
+            return False
+    
+    def save_game_state(self):
+        try:
+            data = {
+                "board": self.board,
+                "current_player": self.current_player,
+                "selected": self.selected,
+                "legal_moves": self.legal_moves,
+                "extra_turn_after_capture": self.extra_turn_after_capture,
+                "mode": self.mode,
+                "ai_color": self.ai_color,
+                "ai_difficulty": self.ai_difficulty,
+                "ai_player": self.ai_player,
+            }
+            
+            with open(self.SAVE_FILE, "w") as f:
+                json.dump(data, f, indent=4)
+            
+            self.saved_game_exists = True  
+            print("Game state saved")
+            
+        except Exception as e:
+            print(f"Failed to save game: {e}")
+    
     def load_window_geometry(self):
-
         if os.path.exists(self.config_file):
             config = configparser.ConfigParser()
             config.read(self.config_file)
-
+            
             if "Geometry" in config:
                 geometry = config["Geometry"].get("size", "")
-                state = config["Geometry"].get("state", "normal")
-
                 if geometry:
-                    self.root.geometry(geometry)
-                    self.root.update_idletasks()
-                    self.root.update()
-
-                if state == "zoomed":
-                    self.root.state("zoomed")
-                elif state == "iconic":
-                    self.root.iconify()
-
+                    # Handle different formats: "widthxheight" or "widthxheight+x+y"
+                    # We only need the width and height parts
+                    if 'x' in geometry and '+' in geometry:
+                        # Format: "widthxheight+x+y"
+                        # Split by '+' first, then take the first part
+                        size_part = geometry.split('+')[0]
+                        w, h = map(int, size_part.split('x'))
+                    elif 'x' in geometry:
+                        # Format: "widthxheight"
+                        w, h = map(int, geometry.split('x'))
+                    else:
+                        # Invalid format, use defaults
+                        w, h = SCREEN_WIDTH, SCREEN_HEIGHT
+                    
+                    self.screen = pygame.display.set_mode((w, h))
+                    
     def save_window_geometry(self):
         config = configparser.ConfigParser()
-
+        
         if os.path.exists(self.config_file):
             config.read(self.config_file)
-
+        
         if not config.has_section("Geometry"):
             config.add_section("Geometry")
-        config["Geometry"]["size"] = self.root.geometry()
-        config["Geometry"]["state"] = self.root.state()
-
+        
+        w, h = self.screen.get_size()
+        # Only save the size, not the position
+        config["Geometry"]["size"] = f"{w}x{h}"
+        
         with open(self.config_file, "w") as f:
             config.write(f)
+            
+    def start_game(self):
+        self.mode = self.dropdowns["mode"].get_selected()
 
-    def toggle_ai(self):
-
-        if self.ai_enabled and self.state.current_player == RED:
-            self.root.after(500, self.ai_move)
-
-    def restart_game(self):
-        self.state = GameState()
-
-        if self.controllar_frame is not None:
-
-            try:
-                self.controllar_frame.place_forget()
-                self.controllar_frame.destroy()
-
-            except:
-                pass
-            self.controllar_frame = None
-        self.game_over = False
-        self.main_frame.pack(fill="both", expand=True)
-        self.selected = None
-        self.valid_moves = []
-        self.valid_captures = []
-        self.draw_board()
-
-        if self.ai_enabled and self.state.current_player == RED:
-            self.root.after(500, self.ai_move)
-
-    def coord_to_pixel(self, r, c):
-        x = MARGIN + c * CELL
-        y = MARGIN + r * CELL
-        return x, y
-
-    def pixel_to_coord(self, x, y):
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                px, py = self.coord_to_pixel(r,c)
-
-                if (x-px)**2 + (y-py)**2 <= 20**2:
-                    return r,c
-        return None
-
-    def draw_board(self):
-
-        if getattr(self, "game_over", False):
-            return
-        self.canvas.delete("all")
-        self.canvas.create_rectangle(18, 18, CANVAS_SIZE - 18, CANVAS_SIZE - 18,
-                                     fill='#071029', outline='')
-        for i in range(BOARD_SIZE):
-            x1, y = self.coord_to_pixel(i, 0)
-            x2, _ = self.coord_to_pixel(i, BOARD_SIZE - 1)
-            self.canvas.create_line(MARGIN, y, CANVAS_SIZE - MARGIN, y,
-                                    width=LINE_WIDTH, fill='#2b3948')
-            x, y1 = self.coord_to_pixel(0, i)
-            _, y2 = self.coord_to_pixel(BOARD_SIZE - 1, i)
-            self.canvas.create_line(x, MARGIN, x, CANVAS_SIZE - MARGIN,
-                                    width=LINE_WIDTH, fill='#2b3948')
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                x, y = self.coord_to_pixel(r, c)
-                for nr, nc in self.state.neighbors(r, c):
-                    x2, y2 = self.coord_to_pixel(nr, nc)
-
-                    if nr > r or (nr == r and nc > c):
-                        self.canvas.create_line(x, y, x2, y2,
-                                                width=1.5, fill='#233041')
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-                x, y = self.coord_to_pixel(r, c)
-                self.canvas.create_oval(x - 6, y - 6, x + 6, y + 6,
-                                        fill='#0b1220', outline='#1f2a36')
-                piece = self.state.grid[r][c]
-
-                if piece == RED:
-                    self.canvas.create_image(x, y, image=self.red_piece)
-                elif piece == GREEN:
-                    self.canvas.create_image(x, y, image=self.green_piece)
-
-        if self.selected:
-            sr, sc = self.selected
-            x, y = self.coord_to_pixel(sr, sc)
-
-            if not self.animation_running:
-                self.animation_running = True
-                self.animate_selection()
-            for (mr, mc) in self.valid_moves:
-                mx, my = self.coord_to_pixel(mr, mc)
-                self.canvas.create_oval(mx - 8, my - 8, mx + 8, my + 8,
-                                        outline="#7ee787", width=2)
-            for (_, (jr, jc)) in self.valid_captures:
-                mx, my = self.coord_to_pixel(jr, jc)
-                self.canvas.create_oval(mx - 10, my - 10, mx + 10, my + 10,
-                                        outline="red", width=2)
-        self.info_var.set(f"{'RED' if self.state.current_player == RED else 'GREEN'}'s turn")
-        red_count = self.state.count_pieces(RED)
-        green_count = self.state.count_pieces(GREEN)
-
-        if green_count == 0:
-            self.game_over_window("RED WINS!!")
-            return
-
-        if red_count == 0:
-            self.game_over_window("GREEN WINS!!")
-            return
-
-        if self.state.is_red_win():
-            self.game_over_window("RED WINS!!")
-        elif self.state.is_green_win():
-            self.game_over_window("GREEN WINS!!")
+        if self.mode == "Play with AI":
+            self.ai_color = self.dropdowns["ai_color"].get_selected()
+            self.ai_difficulty = self.dropdowns["difficulty"].get_selected()
+            self.ai_player = 'R' if self.ai_color == "Red" else 'G'
         else:
-            self.status_var.set("Game in progress...")
+            self.ai_color = None
+            self.ai_difficulty = None
+            self.ai_player = None
 
-    def game_over_window(self, message):
-
-        if getattr(self, "game_over", False):
-            return
-        self.game_over = True
-        self.animation_running = False
-
-        try:
-            self.main_frame.pack_forget()
-
-        except:
-            pass
-
-        if self.controllar_frame is not None:
-
-            try:
-                self.controllar_frame.destroy()
-
-            except:
-                pass
-            self.controllar_frame = None
-        self.controllar_frame = tk.Frame(self.root,width=400, height=400, bg="#081996")
-        self.controllar_frame.place(relx=0.5, rely=0.5, anchor="center")
-        tk.Label(self.controllar_frame, text="Game Over", font=("Arial", 40, "bold"), fg="red", bg="#081996").pack(pady=10, padx=30)
-        tk.Label(self.controllar_frame, text=message, font=("Arial", 20), fg="#82eef0", bg="#081996").pack(pady=10)
-        tk.Button(self.controllar_frame, text="Play Again", command=self.restart_game, bg="#0AAB22", fg="white", bd=0, activebackground="#0CF067", font=("Segoe UI", 12, "bold"), width=12).pack(pady=10)
-        tk.Button(self.controllar_frame, text="Quit", command=self.on_closing, bg="#FF0808", fg="white", bd=0, activebackground="#EF4545", font=("Segoe UI", 12, "bold"), width=12).pack(pady=(10,30))
-
-    def on_click(self, event):
-
-        if self.state.current_player == RED and self.ai_enabled:
-            return
-
-        if getattr(self, "game_over", False):
-            return
-        cell = self.pixel_to_coord(event.x, event.y)
-
-        if not cell:
-            return
-        r, c = cell
-        piece = self.state.grid[r][c]
-
-        if self.selected is None:
-
-            if piece == self.state.current_player:
-                self.selected = (r, c)
-                self.valid_moves, self.valid_captures = self.state.valid_moves(r, c)
-                self.animation_running = True
-                self.animate_selection()
-        else:
-            sr, sc = self.selected
-            capture_made = False
-            for (enemy, (jr, jc)) in self.valid_captures:
-
-                if (r, c) == (jr, jc):
-                    er, ec = enemy
-                    self.state.grid[jr][jc] = self.state.grid[sr][sc]
-                    self.state.grid[sr][sc] = EMPTY
-                    self.state.grid[er][ec] = EMPTY
-                    capture_made = True
-                    self.selected = (jr, jc)
-                    self.valid_moves, self.valid_captures = self.state.valid_moves(jr, jc)
-                    self.draw_board()
-                    self.cut_sound2.play()
-                    self.status_var.set("CUT!")
-                    self.root.after(800, self.draw_board)
-
-                    if self.valid_captures and self.state.current_player == GREEN:
-                        return
-                    else:
-                        self.state.current_player = GREEN if self.state.current_player == RED else RED
-                    break
-
-            if not capture_made:
-
-                if (r, c) in self.valid_moves:
-                    self.state.grid[r][c] = self.state.grid[sr][sc]
-                    self.state.grid[sr][sc] = EMPTY
-                    self.state.current_player = GREEN if self.state.current_player == RED else RED
-                self.selected = None
-                self.animation_running = False
-                for item_id in self.animation_items.values():
-                    self.canvas.delete(item_id)
-                self.animation_items.clear()
-        self.draw_board()
-
-        if self.ai_enabled and self.state.current_player == RED:
-            self.root.after(500, self.ai_move)
-
-    def evaluate(self):
-        green_count = sum(cell == GREEN for row in self.state.grid for cell in row)
-        red_count = sum(cell == RED for row in self.state.grid for cell in row)
-        material_score = (10 - green_count) * 50 - (8 - red_count) * 30
-        red_moves = 0
-        red_captures = 0
-        green_moves = 0
-        green_captures = 0
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-
-                if self.state.grid[r][c] == RED:
-                    moves, caps = self.state.valid_moves(r, c)
-                    red_moves += len(moves)
-                    red_captures += len(caps) * 3
-                elif self.state.grid[r][c] == GREEN:
-                    moves, caps = self.state.valid_moves(r, c)
-                    green_moves += len(moves)
-                    green_captures += len(caps) * 3
-        mobility_score = (red_moves + red_captures * 5) - (green_moves + green_captures * 4)
-        center_control = 0
-        key_positions = [(1, 1), (1, 3), (3, 1), (3, 3)]
-        for r in range(BOARD_SIZE):
-            for c in range(BOARD_SIZE):
-
-                if self.state.grid[r][c] == RED:
-                    distance_to_center = abs(r - 2) + abs(c - 2)
-                    center_control += (4 - distance_to_center) * 2
-
-                    if (r, c) in key_positions:
-                        center_control += 10
-
-        if self.state.is_red_win():
-            return 10000 + material_score
-
-        if self.state.is_green_win():
-            return -10000 - material_score
-        return material_score + mobility_score + center_control
-
-    def board_key(self):
-        return tuple(tuple(row) for row in self.state.grid), self.state.current_player
-
-    def minimax(self, depth, is_red_turn, alpha=-float('inf'), beta=float('inf'), memo=None):
-
-        if memo is None:
-            memo = {}
-        board_key = self.board_key()
-        key = (board_key, depth, is_red_turn)
-
-        if key in memo:
-            return memo[key]
-
-        if depth == 0 or self.state.is_red_win() or self.state.is_green_win():
-            score = self.evaluate()
-            memo[key] = (score, None)
-            return score, None
-        best_move = None
-
-        if is_red_turn:
-            max_eval = -float('inf')
-            all_moves = []
-            for r in range(BOARD_SIZE):
-                for c in range(BOARD_SIZE):
-
-                    if self.state.grid[r][c] == RED:
-                        moves, caps = self.state.valid_moves(r, c)
-                        for move in moves:
-                            all_moves.append(((r, c), move, None))
-                        for (enemy, dest) in caps:
-                            all_moves.append(((r, c), dest, enemy))
-            all_moves.sort(
-                key=lambda x: (
-                    x[2] is not None,
-                    -(abs(x[1][0] - 2) + abs(x[1][1] - 2))
-                ),
-                reverse=True
-            )
-            for move in all_moves:
-                (sr, sc), (jr, jc), enemy = move
-                backup = [row[:] for row in self.state.grid]
-                self.state.grid[jr][jc] = RED
-                self.state.grid[sr][sc] = EMPTY
-
-                if enemy:
-                    er, ec = enemy
-                    self.state.grid[er][ec] = EMPTY
-                eval_score, _ = self.minimax(depth - 1, False, alpha, beta, memo)
-                self.state.grid = backup
-
-                if eval_score > max_eval:
-                    max_eval, best_move = eval_score, move
-                alpha = max(alpha, eval_score)
-
-                if beta <= alpha:
-                    break
-            memo[key] = (max_eval, best_move)
-            return max_eval, best_move
-        else:
-            min_eval = float('inf')
-            all_moves = []
-            for r in range(BOARD_SIZE):
-                for c in range(BOARD_SIZE):
-
-                    if self.state.grid[r][c] == GREEN:
-                        moves, caps = self.state.valid_moves(r, c)
-                        for move in moves:
-                            all_moves.append(((r, c), move, None))
-                        for (enemy, dest) in caps:
-                            all_moves.append(((r, c), dest, enemy))
-            all_moves.sort(
-                key=lambda x: (
-                    x[2] is not None,
-                    (abs(x[1][0] - 2) + abs(x[1][1] - 2))
-                ),
-                reverse=True
-            )
-            for move in all_moves:
-                (sr, sc), (jr, jc), enemy = move
-                backup = [row[:] for row in self.state.grid]
-                self.state.grid[jr][jc] = GREEN
-                self.state.grid[sr][sc] = EMPTY
-
-                if enemy:
-                    er, ec = enemy
-                    self.state.grid[er][ec] = EMPTY
-                eval_score, _ = self.minimax(depth - 1, True, alpha, beta, memo)
-                self.state.grid = backup
-
-                if eval_score < min_eval:
-                    min_eval, best_move = eval_score, move
-                beta = min(beta, eval_score)
-
-                if beta <= alpha:
-                    break
-            memo[key] = (min_eval, best_move)
-            return min_eval, best_move
-
-    def _apply_ai_move(self, best_move, captured):
-
-        if best_move:
-            (sr, sc), (jr, jc), enemy = best_move
-            self.state.grid[jr][jc] = self.state.grid[sr][sc]
-            self.state.grid[sr][sc] = EMPTY
-
-            if enemy:
-                er, ec = enemy
-                self.state.grid[er][ec] = EMPTY
-        self.state.current_player = GREEN
+        self.init_board()
         self.selected = None
-        self.valid_moves = []
-        self.valid_captures = []
-        self._handle_post_ai_move_capture(captured)
+        self.legal_moves = []
+        self.current_player = 'R'
+        self.extra_turn_after_capture = False
+        self.ai_thinking = False
 
-    def ai_move(self):
+        self.game_mode = "playing"
+        self.show_mode_selection = False
 
-        if self.state.current_player != RED:
-            return
+        if self.mode == "Play with AI" and self.current_player == self.ai_player:
+            pygame.time.set_timer(pygame.USEREVENT, 500)
 
-        def think():
-            level = self.difficulty.get()
+    
+    def restart_current_game(self):
+        """Restart game using the SAME mode & AI settings"""
 
-            if level == "Easy":
-                depth = 1
-
-                if random.random() < 0.3:
-                    red_pieces = []
-                    for r in range(BOARD_SIZE):
-                        for c in range(BOARD_SIZE):
-
-                            if self.state.grid[r][c] == RED:
-                                moves, captures = self.state.valid_moves(r, c)
-
-                                if moves or captures:
-                                    red_pieces.append((r, c))
-
-                    if red_pieces:
-                        sr, sc = random.choice(red_pieces)
-                        moves, captures = self.state.valid_moves(sr, sc)
-                        all_moves = [(m, None) for m in moves] + [(dest, enemy) for enemy, dest in captures]
-
-                        if all_moves:
-                            m, enemy = random.choice(all_moves)
-                            best_move = ((sr, sc), m, enemy)
-                            captured = bool(enemy)
-                            self.root.after(0, lambda bm=best_move, cap=captured: self._apply_ai_move(bm, cap))
-                            return
-                depth = 1
-            elif level == "Medium":
-                depth = 2
-            elif level == "Hard":
-                depth = 3
-            else:
-                depth = 4
-            _, best_move = self.minimax(depth, True)
-
-            if not best_move:
-                red_pieces = []
-                for r in range(BOARD_SIZE):
-                    for c in range(BOARD_SIZE):
-
-                        if self.state.grid[r][c] == RED:
-                            moves, captures = self.state.valid_moves(r, c)
-
-                            if moves or captures:
-                                red_pieces.append((r, c))
-
-                if red_pieces:
-                    sr, sc = random.choice(red_pieces)
-                    moves, captures = self.state.valid_moves(sr, sc)
-                    all_moves = [(m, None) for m in moves] + [(dest, enemy) for enemy, dest in captures]
-
-                    if all_moves:
-                        m, enemy = random.choice(all_moves)
-                        best_move = ((sr, sc), m, enemy)
-            captured = bool(best_move and best_move[2])
-            self.root.after(0, lambda bm=best_move, cap=captured: self._apply_ai_move(bm, cap))
-        threading.Thread(target=think, daemon=True).start()
-
-    def save_game_state(self):
-        config = configparser.ConfigParser()
-
-        if os.path.exists(self.config_file):
-            config.read(self.config_file)
-
-        if not config.has_section("GameState"):
-            config.add_section("GameState")
-        grid_str = ''.join(''.join(row) for row in self.state.grid)
-        config["GameState"]["grid"] = grid_str
-        config["GameState"]["current_player"] = self.state.current_player
-        config["GameState"]["ai_enabled"] = str(self.ai_enabled)
-        config["GameState"]["difficulty"] = self.difficulty.get()
-
-        with open(self.config_file, "w") as f:
-            config.write(f)
-
-    def load_game_state(self):
-
-        if not os.path.exists(self.config_file):
-            return False
-        config = configparser.ConfigParser()
-        config.read(self.config_file)
-
-        if "GameState" not in config:
-            return False
-
-        try:
-            grid_str = config["GameState"]["grid"]
-            for i in range(BOARD_SIZE):
-                for j in range(BOARD_SIZE):
-                    self.state.grid[i][j] = grid_str[i * BOARD_SIZE + j]
-            self.state.current_player = config["GameState"]["current_player"]
-            self.ai_enabled = config["GameState"].getboolean("ai_enabled")
-            self.difficulty.set(config["GameState"]["difficulty"])
-
-            if hasattr(self, 'ai_btn'):
-                self.ai_btn.config(
-                    image=(self.toggle_on_icon if self.ai_enabled else self.toggle_off_icon)
-                )
-            return True
-
-        except:
-            return False
-
-    def show_welcome_screen(self):
-        self.welcome_frame = tk.Frame(self.root,  width=350, background="#0F0895")
-        self.welcome_frame.place(relx=0.5, rely=0.5, anchor="center")
-        tk.Label(self.welcome_frame, text="BAGH BANDI",
-                font=("Segoe UI", 30, "bold"), fg="white", bg="#0F0895").pack(pady=20, padx=30)
-        tk.Button(self.welcome_frame, text="New Game",
-                command=self.start_new_game, bg="#0AAB22", fg="white", bd=0, activebackground="#0CF067",
-                font=("Segoe UI", 12, "bold"), width=15).pack(pady=10)
-        has_saved_game = os.path.exists(self.config_file)
-        self.continue_btn = tk.Button(self.welcome_frame, text="Continue", bd=0, activebackground="#3073F7",
-                                    command=self.continue_game, bg="blue", fg="white",
-                                    font=("Segoe UI", 12, "bold"),
-                                    width=15, state="normal" if has_saved_game else "disabled")
-        self.continue_btn.pack(pady=10)
-        tk.Button(self.welcome_frame, text="Quit", bd=0, activebackground="#F94B4B",
-                command=self.on_closing, bg="red", fg="white",
-                font=("Segoe UI", 12, "bold"), width=15).pack(pady=(10,20))
-
-    def start_new_game(self):
-        self.welcome_frame.destroy()
-        self.state = GameState()
+        # Reset board only
+        self.init_board()
         self.selected = None
-        self.valid_moves = []
-        self.valid_captures = []
-        self.game_over = False
-        self.draw_board()
-        self.canvas_frame.pack(side="left", padx=10, pady=10)
-        self.sidebar.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        self.legal_moves = []
+        self.current_player = 'R'
+        self.extra_turn_after_capture = False
+        self.ai_thinking = False
 
-        if self.ai_enabled and self.state.current_player == RED:
-            self.root.after(500, self.ai_move)
+        # Keep SAME mode
+        if self.mode == "Play with AI":
+            self.ai_player = 'R' if self.ai_color == "Red" else 'G'
+        else:
+            self.ai_player = None
 
-    def continue_game(self):
+        self.game_message_active = False
+        self.game_message = None
+        self.game_mode = "playing"
 
-        if self.load_game_state():
-            self.welcome_frame.destroy()
-            self.selected = None
-            self.valid_moves = []
-            self.valid_captures = []
-            self.game_over = False
-            self.draw_board()
-            self.canvas_frame.pack(side="left", padx=10, pady=10)
-            self.sidebar.pack(side="left", fill="both", expand=True, padx=10, pady=10)
+        # AI starts if needed
+        if self.mode == "Play with AI" and self.current_player == self.ai_player:
+            pygame.time.set_timer(pygame.USEREVENT, 500)
 
-            if self.ai_enabled and self.state.current_player == RED:
-                self.root.after(500, self.ai_move)
+
+    def home_game(self):
+        self.selected = None
+        self.legal_moves = []
+        self.current_player = 'R'
+        self.extra_turn_after_capture = False
+        self.ai_thinking = False
+        self.init_board()
+    
+    def run(self):
+        clock = pygame.time.Clock()
+        running = True
+        
+        while running:
+            mouse_pos = pygame.mouse.get_pos()
+            
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    if self.game_mode == "playing":
+                        self.save_game_state()   # ✅ only save real games
+                    self.save_window_geometry()
+                    running = False
+                elif event.type == pygame.USEREVENT:
+                    pygame.time.set_timer(pygame.USEREVENT, 0)  # Clear timer
+                    self.ai_move()
+                
+                # In the event handling section
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    # ================= GAME OVER STATE =================
+                    if self.game_message_active:
+                        if self.buttons["replay"].is_clicked(mouse_pos, event):
+                            self.game_message_active = False
+                            # self.start_game()   # restart game
+                            self.restart_current_game()
+
+                        elif self.buttons["game_home"].is_clicked(mouse_pos, event):
+                            self.game_message_active = False
+                            self.home_to_splash()
+
+                        continue  # 🚫 block all other clicks
+
+                    # ================= SPLASH SCREEN =================
+                    if self.game_mode == "splash" and not self.show_mode_selection:
+                        if self.saved_game_exists and self.buttons["continue"].is_clicked(mouse_pos, event):
+                            if self.load_game_state():
+                                self.game_mode = "playing"
+                        elif self.buttons["new_game"].is_clicked(mouse_pos, event):
+                            self.show_mode_selection = True
+
+                    elif self.game_mode == "splash" and self.show_mode_selection:
+                        self.dropdowns["mode"].handle_event(event)
+
+                        if self.dropdowns["mode"].get_selected() == "Play with AI":
+                            self.dropdowns["ai_color"].handle_event(event)
+                            self.dropdowns["difficulty"].handle_event(event)
+
+                        if self.buttons["start"].is_clicked(mouse_pos, event):
+                            self.start_game()
+
+                        elif self.buttons["back"].is_clicked(mouse_pos, event):
+                            self.show_mode_selection = False
+
+                    # ================= GAME PLAYING =================
+                    elif self.game_mode == "playing":
+                        if self.buttons["home"].is_clicked(mouse_pos, event):
+                            self.home_to_splash()
+                            continue
+
+                        if self.mode == "Play with AI" and self.current_player == self.ai_player:
+                            continue
+
+                        if self.ai_thinking:
+                            continue
+
+                        cell = self.nearest_cell(mouse_pos[0], mouse_pos[1])
+                        if cell is not None:
+                            r, c = cell
+                            piece = self.board[r][c]
+
+                            if self.selected is None:
+                                if piece == self.current_player:
+                                    self.selected = (r, c)
+                                    self.legal_moves = self.find_legal_moves(r, c)
+                            else:
+                                sr, sc = self.selected
+                                if (r, c) == (sr, sc):
+                                    self.selected = None
+                                    self.legal_moves = []
+                                elif (r, c) in self.legal_moves:
+                                    self.make_move(sr, sc, r, c)
+                                elif piece == self.current_player:
+                                    self.selected = (r, c)
+                                    self.legal_moves = self.find_legal_moves(r, c)
+
+            self.selection_ring.update()          
+            # Draw current screen
+            if self.game_mode == "splash":
+                self.draw_splash_screen()
+            elif self.game_mode == "mode_select":
+                self.draw_game_mode_screen()
+            elif self.game_mode == "playing":
+                self.draw_game_screen()
+            
+            pygame.display.flip()
+            clock.tick(60)
+        
+        pygame.quit()
+        sys.exit()
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = BaghBandiUI(root)
-    root.mainloop()
+    try:
+        from ctypes import windll
+        windll.shcore.SetProcessDpiAwareness(2)
+    except:
+        pass
+    game = BaghChalPygame()
+    game.run()
